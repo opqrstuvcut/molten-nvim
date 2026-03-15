@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 from itertools import chain
 
@@ -497,6 +498,70 @@ class Molten:
         for kernel in molten_kernels:
             if kernel.open_image_popup():
                 return
+
+    def _save_image_command(self, args) -> None:
+        current_buf = self.nvim.current.buffer
+        direct_image_path = None
+        try:
+            direct_image_path = current_buf.vars.get("molten_image_path")
+        except Exception:
+            direct_image_path = None
+
+        if direct_image_path:
+            if len(args) > 0:
+                target = args[0]
+            else:
+                target = self.nvim.funcs.input(
+                    "Save image to: ", os.path.basename(direct_image_path), "file"
+                )
+
+            if not target:
+                return
+
+            target = os.path.expanduser(target)
+            target_dir = os.path.dirname(target)
+            if target_dir:
+                os.makedirs(target_dir, exist_ok=True)
+            shutil.copy2(direct_image_path, target)
+            notify_info(self.nvim, f"Saved image to {target}")
+            return
+
+        molten_kernels = self._get_current_buf_kernels(False)
+        if molten_kernels is None:
+            notify_error(self.nvim, "No active Molten kernel or image output found")
+            return
+
+        image_path = None
+        selected_kernel = None
+        for kernel in molten_kernels:
+            image_path = kernel.get_current_image_path()
+            if image_path is not None:
+                selected_kernel = kernel
+                break
+
+        if image_path is None or selected_kernel is None:
+            notify_error(self.nvim, "No image output to save")
+            return
+
+        if len(args) > 0:
+            target = args[0]
+        else:
+            target = self.nvim.funcs.input("Save image to: ", os.path.basename(image_path), "file")
+
+        if not target:
+            return
+
+        selected_kernel.save_current_image(target)
+
+    @pynvim.command("MoltenSaveImage", nargs="*", sync=True, complete="file")  # type: ignore
+    @nvimui  # type: ignore
+    def command_save_image(self, args) -> None:
+        self._save_image_command(args)
+
+    @pynvim.command("SaveImage", nargs="*", sync=True, complete="file")  # type: ignore
+    @nvimui  # type: ignore
+    def command_save_image_compat(self, args) -> None:
+        self._save_image_command(args)
 
     @pynvim.command("MoltenEvaluateArgument", nargs="*", sync=True)  # type: ignore
     @nvimui

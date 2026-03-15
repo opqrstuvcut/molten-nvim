@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import IO, Callable, List, Optional, Dict, Tuple
 from queue import Queue
 import hashlib
+import os
+import shutil
 
 from pynvim import Nvim
 from pynvim.api import Buffer
@@ -170,6 +172,42 @@ class MoltenKernel:
                             self.nvim, "Failed to open image when trying to show the popup"
                         )
 
+        return True
+
+    def get_current_image_path(self) -> Optional[str]:
+        current_buf = self.nvim.current.buffer
+        try:
+            image_path = current_buf.vars.get("molten_image_path")
+            if image_path:
+                return image_path
+        except Exception:
+            pass
+
+        self.selected_cell = self._get_selected_span()
+        if self.selected_cell is None:
+            return None
+
+        output = self.outputs[self.selected_cell].output
+        for chunk in reversed(output.chunks):
+            if isinstance(chunk, ImageOutputChunk):
+                return chunk.img_path
+        return None
+
+    def save_current_image(self, destination: str, silent: bool = False) -> bool:
+        image_path = self.get_current_image_path()
+        if image_path is None:
+            if not silent:
+                notify_warn(self.nvim, "No image output to save.")
+            return False
+
+        target = os.path.expanduser(destination)
+        target_dir = os.path.dirname(target)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+
+        shutil.copy2(image_path, target)
+        if not silent:
+            notify_info(self.nvim, f"Saved image to {target}")
         return True
 
     def open_in_browser(self, silent=False) -> bool:
@@ -462,7 +500,7 @@ class MoltenKernel:
             )
 
         if self.should_show_floating_win:
-            self.outputs[span].show_floating_win(span.end)
+            self.outputs[span].show_floating_win(span.end, span)
         else:
             self.outputs[span].clear_float_win()
 

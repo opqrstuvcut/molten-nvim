@@ -55,6 +55,7 @@ class MoltenOptions:
     output_win_style: Optional[str]
     output_win_zindex: Optional[str]
     save_path: str
+    snacks_gallery_position: Literal["bottom", "right"]
     split_direction: str | None
     split_size: int | None
     show_mimetype_debug: bool
@@ -97,6 +98,7 @@ class MoltenOptions:
             ("molten_output_win_max_width", 999999),
             ("molten_output_win_style", False),
             ("molten_save_path", os.path.join(nvim.funcs.stdpath("data"), "molten")),
+            ("molten_snacks_gallery_position", "bottom"),
             ("molten_split_direction", "right"),
             ("molten_split_size", 40),
             ("molten_show_mimetype_debug", False),

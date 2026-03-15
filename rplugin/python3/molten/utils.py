@@ -1,3 +1,7 @@
+import time
+import traceback
+from functools import wraps
+
 from pynvim import Nvim
 
 
@@ -5,12 +9,33 @@ class MoltenException(Exception):
     pass
 
 
+_LAST_ERROR: tuple[str, float] | None = None
+
+
 def nvimui(func):  # type: ignore
+    @wraps(func)
     def inner(self, *args, **kwargs):  # type: ignore
         try:
             func(self, *args, **kwargs)
         except MoltenException as err:
-            self.nvim.err_write("[Molten] " + str(err) + "\n")
+            notify_error(self.nvim, str(err))
+        except Exception as err:
+            global _LAST_ERROR
+            message = f"{func.__name__}: {err}"
+            now = time.monotonic()
+            if _LAST_ERROR is None or _LAST_ERROR[0] != message or now - _LAST_ERROR[1] > 1.5:
+                _LAST_ERROR = (message, now)
+                notify_error(
+                    self.nvim,
+                    message + ". Check `:messages` for the Python traceback.",
+                )
+                self.nvim.err_write(
+                    "[Molten] Unhandled exception in "
+                    + func.__name__
+                    + "\n"
+                    + "".join(traceback.format_exc())
+                    + "\n"
+                )
 
     return inner
 

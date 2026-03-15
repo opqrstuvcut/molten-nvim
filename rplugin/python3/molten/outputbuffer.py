@@ -4,6 +4,7 @@ from typing import Any, List, Optional, Tuple, Union, Callable
 from pynvim import Nvim
 from pynvim.api import Buffer, Window
 
+from molten.code_cell import CodeCell
 from molten.images import Canvas
 from molten.outputchunks import ImageOutputChunk, Output, OutputStatus
 from molten.options import MoltenOptions
@@ -238,10 +239,6 @@ class OutputBuffer:
         while len(lines) > 0 and lines[-1] == "":
             lines.pop()
 
-        # HACK: add an extra line for snacks image in windows
-        if self.options.image_provider == "snacks.nvim":
-            lines.append("")
-
         lines.insert(0, self._get_header_text(self.output))
         return lines, len(lines) - 1 + virtual_lines
 
@@ -320,7 +317,45 @@ class OutputBuffer:
         # Only get here if current_pos.lineno == 0
         return 0
 
-    def show_floating_win(self, anchor: Position) -> None:
+    def _cell_right_screen_col(self, span: CodeCell, win: Window) -> int:
+        win_info = self.nvim.funcs.getwininfo(win.handle)[0]
+        text_left = win_info["wincol"] - 1 + win_info["textoff"]
+
+        lines = self.nvim.funcs.nvim_buf_get_lines(
+            span.bufno, span.begin.lineno, span.end.lineno + 1, False
+        )
+        if len(lines) == 0:
+            return text_left
+
+        display_lines: list[str] = []
+        if len(lines) == 1:
+            display_lines.append(lines[0][span.begin.colno : span.end.colno])
+        else:
+            display_lines.append(lines[0][span.begin.colno :])
+            display_lines.extend(lines[1:-1])
+            display_lines.append(lines[-1][: span.end.colno])
+
+        max_width = max((self.nvim.funcs.strdisplaywidth(line) for line in display_lines), default=0)
+        return text_left + max_width
+
+    def _gallery_anchor_col(self, span: CodeCell | None, win: Window) -> int | None:
+        current_buf = self.nvim.current.buffer
+        try:
+            anchor_col = current_buf.vars.get("molten_snacks_gallery_right_anchor_col")
+            if isinstance(anchor_col, int):
+                return anchor_col
+        except Exception:
+            pass
+
+        anchor_col = self.nvim.vars.get("molten_snacks_gallery_right_anchor_col")
+        if isinstance(anchor_col, int):
+            return anchor_col
+
+        if span is None:
+            return None
+        return self._cell_right_screen_col(span, win)
+
+    def show_floating_win(self, anchor: Position, span: CodeCell | None = None) -> None:
         win = self.nvim.current.window
         win_col = 0
         offset = 0
@@ -362,6 +397,9 @@ class OutputBuffer:
         self.nvim.api.set_option_value(
             "filetype", "molten_output", {"buf": self.display_buf.handle}
         )
+        gallery_anchor_col = self._gallery_anchor_col(span, win)
+        if gallery_anchor_col is not None:
+            self.display_buf.vars["molten_gallery_anchor_col"] = gallery_anchor_col
 
         # Open output window
         # assert self.display_window is None

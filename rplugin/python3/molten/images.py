@@ -259,7 +259,7 @@ class WeztermCanvas(Canvas):
         )
 
 
-class SnacksCanvas(Canvas):
+class SnacksGalleryCanvas(Canvas):
     nvim: Nvim
     to_make_visible: Set[str]
     to_make_invisible: Set[str]
@@ -270,33 +270,32 @@ class SnacksCanvas(Canvas):
         self.visible = set()
         self.to_make_visible = set()
         self.to_make_invisible = set()
-        self.next_id = 0
 
     def init(self) -> None:
-        self.nvim.exec_lua("_snacks = require('load_snacks_nvim').snacks_api")
-        self.snacks_api = self.nvim.lua._snacks
+        self.nvim.exec_lua("_snacks_gallery = require('load_snacks_gallery_nvim').gallery_api")
+        self.snacks_gallery_api = self.nvim.lua._snacks_gallery
+        self.snacks_gallery_api.configure(self.nvim.vars.get("molten_snacks_gallery_position", "bottom"))
 
     def deinit(self) -> None:
-        self.snacks_api.clear_all()
+        self.snacks_gallery_api.clear_all()
 
     def present(self) -> None:
-        # images to both show and hide should be ignored
         to_work_on = self.to_make_visible.difference(
             self.to_make_visible.intersection(self.to_make_invisible)
         )
         self.to_make_invisible.difference_update(self.to_make_visible)
         for identifier in self.to_make_invisible:
-            self.snacks_api.clear(identifier)
+            self.snacks_gallery_api.clear(identifier)
 
         for identifier in to_work_on:
-            self.snacks_api.render(identifier)
+            self.snacks_gallery_api.render(identifier)
 
         self.visible.update(self.to_make_visible)
         self.to_make_invisible.clear()
         self.to_make_visible.clear()
 
-    def img_size(self, identifier: str) -> Dict[str, int]:
-        return self.snacks_api.image_size(identifier)
+    def img_size(self, _identifier: str) -> Dict[str, int]:
+        return {"height": 0, "width": 0}
 
     def add_image(
         self,
@@ -307,13 +306,14 @@ class SnacksCanvas(Canvas):
         bufnr: int,
         winnr: int | None = None,
     ) -> str:
-        img = self.snacks_api.from_file(
+        img = self.snacks_gallery_api.from_file(
             path,
             {
                 "id": identifier,
                 "buffer": bufnr,
+                "window": winnr,
                 "x": x,
-                "y": y + 1,
+                "y": y,
             },
         )
         self.to_make_visible.add(img)
@@ -330,8 +330,8 @@ def get_canvas_given_provider(nvim: Nvim, options: MoltenOptions) -> Canvas:
         return NoCanvas()
     elif name == "image.nvim":
         return ImageNvimCanvas(nvim)
-    elif name == "snacks.nvim":
-        return SnacksCanvas(nvim)
+    elif name == "snacks-gallery.nvim":
+        return SnacksGalleryCanvas(nvim)
     elif name == "wezterm":
         if options.auto_open_output:
             raise MoltenException(
