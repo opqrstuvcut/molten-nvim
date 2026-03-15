@@ -382,11 +382,7 @@ class MoltenKernel:
 
         self.selected_cell = new_selected_cell
 
-        if (
-            self.selected_cell is not None
-            # Prevent from rendering when it's done
-            and self.output_statuses.get(self.selected_cell, None) != OutputStatus.DONE
-        ):
+        if self.selected_cell is not None:
             self._show_selected(self.selected_cell)
 
         if self.options.virt_text_output:
@@ -401,11 +397,16 @@ class MoltenKernel:
         new_selected_cell = self._get_selected_span()
 
         if (
-            self.selected_cell is None
-            and new_selected_cell is not None
+            new_selected_cell is not None
             and self.options.auto_open_output
+            and (
+                self.selected_cell != new_selected_cell or not self.should_show_floating_win
+            )
         ):
             self.should_show_floating_win = True
+            if self.selected_cell == new_selected_cell:
+                self.update_interface()
+                return
 
         if self.selected_cell == new_selected_cell and new_selected_cell is not None:
             if (

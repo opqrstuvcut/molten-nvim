@@ -703,7 +703,8 @@ class Molten:
         assert molten_kernels is not None
 
         for molten in molten_kernels:
-            if molten.current_output is not None:
+            molten.selected_cell = molten._get_selected_span()
+            if molten.selected_cell is not None:
                 molten.should_show_floating_win = True
                 self._update_interface()
                 return
