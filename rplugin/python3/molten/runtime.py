@@ -188,8 +188,10 @@ class JupyterRuntime:
             return True
         elif message_type == "status":
             execution_state = content["execution_state"]
-            assert execution_state != "starting"
-            if execution_state == "idle":
+            if execution_state == "starting":
+                self.state = RuntimeState.STARTING
+                return True
+            elif execution_state == "idle":
                 self.state = RuntimeState.IDLE
                 output.status = OutputStatus.DONE
                 return True
