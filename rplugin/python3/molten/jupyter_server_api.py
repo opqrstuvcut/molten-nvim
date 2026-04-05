@@ -24,6 +24,7 @@ class JupyterAPIClient:
         self._headers = headers
 
         self._recv_queue: Queue[Dict[str, Any]] = Queue()
+        self._shell_recv_queue: Queue[Dict[str, Any]] = Queue()
         self._stdin_recv_queue: Queue[Dict[str, Any]] = Queue()
         self._kernel_api_base = f"{self._base_url}/api/kernels/{self._kernel_info['id']}"
         self._ws_protocol = ""
@@ -92,6 +93,8 @@ class JupyterAPIClient:
             channel = response.get("channel", "")
             if channel == "stdin":
                 self._stdin_recv_queue.put(msg)
+            elif channel == "shell":
+                self._shell_recv_queue.put(response)
             else:
                 self._recv_queue.put(msg)
 
@@ -127,6 +130,47 @@ class JupyterAPIClient:
             return
 
         self._socket.send(json.dumps(message))
+
+    def complete(self, code: str, cursor_pos: int, timeout: float = 1.0) -> Dict[str, Any]:
+        header = self._build_header("complete_request")
+        msg_id = header["msg_id"]
+
+        message = {
+            'channel': 'shell',
+            'header': header,
+            'parent_header': {},
+            'metadata': {},
+            'content': {
+                'code': code,
+                'cursor_pos': cursor_pos,
+            },
+            'buffers': [],
+        }
+
+        if self._ws_protocol == self._V1_WS_PROTOCOL:
+            self._socket.send_binary(_serialize_v1_message(message))
+        else:
+            self._socket.send(json.dumps(message))
+
+        deadline = time.time() + timeout
+        pending_messages: list[Dict[str, Any]] = []
+        try:
+            while time.time() < deadline:
+                if self._shell_recv_queue.empty():
+                    time.sleep(0.01)
+                    continue
+
+                response = self._shell_recv_queue.get()
+                parent_header = response.get("parent_header", {})
+                response_header = response.get("header", {})
+                if parent_header.get("msg_id") == msg_id and response_header.get("msg_type") == "complete_reply":
+                    return response.get("content", {})
+                pending_messages.append(response)
+        finally:
+            for response in pending_messages:
+                self._shell_recv_queue.put(response)
+
+        return {}
 
     def _build_header(self, msg_type: str) -> Dict[str, str]:
         return {

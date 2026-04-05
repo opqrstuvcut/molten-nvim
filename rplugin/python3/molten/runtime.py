@@ -5,6 +5,8 @@ from queue import Empty as EmptyQueueException
 import os
 import tempfile
 import json
+import queue
+import time
 
 import jupyter_client
 from pynvim import Nvim
@@ -104,6 +106,39 @@ class JupyterRuntime:
 
     def run_code(self, code: str) -> None:
         self.kernel_client.execute(code)
+
+    def complete(self, code: str, cursor_pos: int) -> Dict[str, Any]:
+        if isinstance(self.kernel_client, JupyterAPIClient):
+            return self.kernel_client.complete(code, cursor_pos)
+
+        assert isinstance(
+            self.kernel_client,
+            jupyter_client.blocking.client.BlockingKernelClient,
+        )
+        msg_id = self.kernel_client.complete(code=code, cursor_pos=cursor_pos)
+        pending_messages = []
+        deadline = time.time() + 1.0
+
+        try:
+            while time.time() < deadline:
+                try:
+                    response = self.kernel_client.get_shell_msg(timeout=0.05)
+                except queue.Empty:
+                    continue
+
+                parent_header = response.get("parent_header", {})
+                header = response.get("header", {})
+                if parent_header.get("msg_id") == msg_id and header.get("msg_type") == "complete_reply":
+                    return response.get("content", {})
+
+                pending_messages.append(response)
+        finally:
+            shell_channel = getattr(self.kernel_client, "shell_channel", None)
+            if shell_channel is not None:
+                for response in pending_messages:
+                    shell_channel.msg_queue.put(response)
+
+        return {}
 
     @contextmanager
     def _alloc_file(

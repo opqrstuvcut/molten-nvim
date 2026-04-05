@@ -305,6 +305,9 @@ class MoltenKernel:
     def send_stdin(self, input: str) -> None:
         self.runtime.kernel_client.input(input)
 
+    def complete(self, code: str, cursor_pos: int):
+        return self.runtime.complete(code, cursor_pos)
+
     def enter_output(self) -> None:
         if self.selected_cell is not None:
             if self.options.enter_output_behavior != "no_open":

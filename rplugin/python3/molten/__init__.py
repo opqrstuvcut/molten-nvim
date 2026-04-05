@@ -299,6 +299,26 @@ class Molten:
     def _get_sorted_buf_cells(self, kernels: List[MoltenKernel], bufnr: int) -> List[CodeCell]:
         return sorted([x for x in chain(*[k.outputs.keys() for k in kernels]) if x.bufno == bufnr])
 
+    def _get_kernel_for_buffer(
+        self,
+        buffer: Buffer,
+        kernel_name: Optional[str] = None,
+    ) -> Optional[MoltenKernel]:
+        kernels = self.buffers.get(buffer.number)
+        if kernels is None or len(kernels) == 0:
+            return None
+
+        if kernel_name is not None and kernel_name != "":
+            for kernel in kernels:
+                if kernel.kernel_id == kernel_name:
+                    return kernel
+            return None
+
+        if len(kernels) == 1:
+            return kernels[0]
+
+        return None
+
     @pynvim.command("MoltenDeinit", nargs=0, sync=True)  # type: ignore
     @nvimui  # type: ignore
     def command_deinit(self) -> None:
@@ -393,6 +413,51 @@ class Molten:
         if self.initialized:
             return "Molten"
         return ""
+
+    @pynvim.function("MoltenComplete", sync=True)  # type: ignore
+    def function_complete(self, args) -> Dict[str, Any]:
+        self._initialize_if_necessary()
+
+        if len(args) < 2:
+            return {}
+
+        code = args[0]
+        cursor_pos = args[1]
+        kernel_name = args[2] if len(args) > 2 else None
+
+        if not isinstance(code, str) or not isinstance(cursor_pos, int):
+            return {}
+
+        kernel = self._get_kernel_for_buffer(self.nvim.current.buffer, kernel_name)
+        if kernel is None:
+            return {}
+
+        try:
+            result = kernel.complete(code, cursor_pos)
+        except Exception:
+            return {}
+
+        if not isinstance(result, dict):
+            return {}
+
+        matches = result.get("matches", [])
+        cursor_start = result.get("cursor_start", cursor_pos)
+        cursor_end = result.get("cursor_end", cursor_pos)
+
+        if not isinstance(matches, list):
+            matches = []
+        if not isinstance(cursor_start, int):
+            cursor_start = cursor_pos
+        if not isinstance(cursor_end, int):
+            cursor_end = cursor_pos
+
+        return {
+            "matches": matches,
+            "cursor_start": cursor_start,
+            "cursor_end": cursor_end,
+            "metadata": result.get("metadata", {}),
+            "status": result.get("status", "ok"),
+        }
 
     @pynvim.command("MoltenNext", sync=True, nargs="*")  # type: ignore
     @nvimui
