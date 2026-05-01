@@ -27,6 +27,7 @@ class MoltenKernel:
     canvas: Canvas
     highlight_namespace: int
     extmark_namespace: int
+    cell_frame_namespace: int
     buffers: List[Buffer]
 
     runtime: JupyterRuntime
@@ -41,6 +42,7 @@ class MoltenKernel:
     selected_cell: Optional[CodeCell]
     should_show_floating_win: bool
     updating_interface: bool
+    cell_frame_cache: Dict[int, Tuple]
 
     options: MoltenOptions
     output_statuses: Dict[Optional[CodeCell], OutputStatus]
@@ -60,7 +62,9 @@ class MoltenKernel:
         self.canvas = canvas
         self.highlight_namespace = highlight_namespace
         self.extmark_namespace = extmark_namespace
+        self.cell_frame_namespace = self.nvim.funcs.nvim_create_namespace("molten-cell-frames")
         self.buffers = [main_buffer]
+        self._setup_cell_frame_highlights()
 
         self._doautocmd("MoltenInitPre")
 
@@ -75,6 +79,7 @@ class MoltenKernel:
         self.output_statuses = {}
         self.should_show_floating_win = False
         self.updating_interface = False
+        self.cell_frame_cache = {}
 
         self.options = options
 
@@ -89,6 +94,13 @@ class MoltenKernel:
 
     def deinit(self) -> None:
         self._doautocmd("MoltenDeinitPre")
+        for buffer in self.buffers:
+            self.nvim.funcs.nvim_buf_clear_namespace(
+                buffer.number,
+                self.cell_frame_namespace,
+                0,
+                -1,
+            )
         self.runtime.deinit()
         self._doautocmd("MoltenDeinitPost")
 
@@ -313,7 +325,8 @@ class MoltenKernel:
             if self.options.enter_output_behavior != "no_open":
                 self.should_show_floating_win = True
             self.should_show_floating_win = self.outputs[self.selected_cell].enter(
-                self.selected_cell.end
+                self.selected_cell.end,
+                self.selected_cell,
             )
 
     def _get_cursor_position(self) -> Position:
@@ -331,6 +344,194 @@ class MoltenKernel:
                 0,
                 -1,
             )
+
+    def _setup_cell_frame_highlights(self) -> None:
+        self.nvim.api.set_hl(0, "MoltenCellBorder", {"fg": "#7AA89F"})
+        self.nvim.api.set_hl(0, "MoltenCellDelimiter", {"fg": "#A3BE8C"})
+
+    def _find_cell_delimiters(self, buffer: Buffer) -> List[int]:
+        delimiters: List[int] = []
+        for index, line in enumerate(buffer.api.get_lines(0, -1, False)):
+            if line.lstrip().startswith("# %%"):
+                delimiters.append(index)
+        return delimiters
+
+    def _cell_label(self, cell_number: int, delimiter_line: str) -> str:
+        name = delimiter_line.lstrip()[4:].strip()
+        if name.startswith("[markdown]"):
+            name = " [markdown]" + name[len("[markdown]") :]
+
+        if name:
+            return f" #{cell_number} {name}"
+        return f" #{cell_number}"
+
+    def _cell_has_virtual_output(self, buffer_number: int, start_line: int, end_line: int) -> bool:
+        if not self.options.virt_text_output:
+            return False
+
+        for span in self.outputs.keys():
+            if (
+                span.bufno == buffer_number
+                and start_line <= span.begin.lineno
+                and span.end.lineno <= end_line
+            ):
+                return True
+        return False
+
+    def _render_cell_frames(self) -> None:
+        buffer = self.nvim.current.buffer
+        if buffer.number not in [b.number for b in self.buffers]:
+            return
+
+        win_width = self.nvim.current.window.width
+        changedtick = self.nvim.funcs.getbufvar(buffer.number, "changedtick")
+        output_signature = tuple(
+            sorted(
+                (span.begin.lineno, span.end.lineno)
+                for span in self.outputs.keys()
+                if span.bufno == buffer.number
+            )
+        )
+        cache_key = (changedtick, win_width, self.options.virt_text_output, output_signature)
+        if self.cell_frame_cache.get(buffer.number) == cache_key:
+            return
+
+        self.nvim.funcs.nvim_buf_clear_namespace(
+            buffer.number,
+            self.cell_frame_namespace,
+            0,
+            -1,
+        )
+
+        lines = buffer.api.get_lines(0, -1, False)
+        delimiters = self._find_cell_delimiters(buffer)
+        if len(delimiters) == 0:
+            self.cell_frame_cache[buffer.number] = cache_key
+            return
+
+        standard_frame_width = max(40, min(int(win_width * 0.8), 120))
+        chars = {
+            "top_left": "╭",
+            "top_right": "╮",
+            "bottom_left": "╰",
+            "bottom_right": "╯",
+            "horizontal": "─",
+            "vertical": "│",
+        }
+
+        for index, start_line in enumerate(delimiters):
+            potential_end = delimiters[index + 1] - 1 if index + 1 < len(delimiters) else len(lines) - 1
+            end_line = start_line
+            for line_index in range(potential_end, start_line - 1, -1):
+                if line_index < len(lines) and lines[line_index].strip():
+                    end_line = line_index
+                    break
+
+            delimiter_line = lines[start_line] if start_line < len(lines) else ""
+            label = self._cell_label(index + 1, delimiter_line)
+            label_width = self.nvim.funcs.strdisplaywidth(label)
+            line_widths: Dict[int, int] = {}
+            max_line_width = 0
+
+            for line_index in range(start_line, end_line + 1):
+                if line_index == start_line:
+                    width = label_width
+                else:
+                    width = self.nvim.funcs.strdisplaywidth(lines[line_index] if line_index < len(lines) else "")
+                line_widths[line_index] = width
+                max_line_width = max(max_line_width, width)
+
+            frame_width = max(standard_frame_width, max_line_width + 3)
+            top_border = (
+                chars["top_left"]
+                + chars["horizontal"] * (frame_width - 2)
+                + chars["top_right"]
+            )
+            bottom_border = (
+                chars["bottom_left"]
+                + chars["horizontal"] * (frame_width - 2)
+                + chars["bottom_right"]
+            )
+
+            buffer.api.set_extmark(
+                self.cell_frame_namespace,
+                start_line,
+                0,
+                {
+                    "virt_lines": [[(top_border, "MoltenCellBorder")]],
+                    "virt_lines_above": True,
+                },
+            )
+            buffer.api.set_extmark(
+                self.cell_frame_namespace,
+                start_line,
+                0,
+                {
+                    "end_row": start_line,
+                    "end_col": len(delimiter_line),
+                    "conceal": "",
+                },
+            )
+            buffer.api.set_extmark(
+                self.cell_frame_namespace,
+                start_line,
+                0,
+                {
+                    "virt_text": [(label, "MoltenCellDelimiter")],
+                    "virt_text_pos": "overlay",
+                    "hl_mode": "combine",
+                },
+            )
+
+            for line_index in range(start_line, end_line + 1):
+                line_width = line_widths.get(line_index, 0)
+                padding = " " * max(0, frame_width - line_width - 3)
+                buffer.api.set_extmark(
+                    self.cell_frame_namespace,
+                    line_index,
+                    0,
+                    {
+                        "virt_text": [(chars["vertical"], "MoltenCellBorder")],
+                        "virt_text_pos": "inline",
+                        "priority": 200,
+                    },
+                )
+
+                if line_index == start_line:
+                    buffer.api.set_extmark(
+                        self.cell_frame_namespace,
+                        line_index,
+                        0,
+                        {
+                            "virt_text": [(chars["vertical"], "MoltenCellBorder")],
+                            "virt_text_pos": "overlay",
+                            "virt_text_win_col": max(0, frame_width - 1),
+                            "priority": 200,
+                        },
+                    )
+                else:
+                    buffer.api.set_extmark(
+                        self.cell_frame_namespace,
+                        line_index,
+                        0,
+                        {
+                            "virt_text": [(padding + chars["vertical"], "MoltenCellBorder")],
+                            "virt_text_pos": "eol",
+                            "priority": 200,
+                        },
+                    )
+
+            if not self._cell_has_virtual_output(buffer.number, start_line, end_line):
+                buffer.api.set_extmark(
+                    self.cell_frame_namespace,
+                    end_line,
+                    0,
+                    {
+                        "virt_lines": [[(bottom_border, "MoltenCellBorder")]],
+                    },
+                )
+
+        self.cell_frame_cache[buffer.number] = cache_key
 
     def clear_open_output_windows(self) -> None:
         for output in self.outputs.values():
@@ -410,6 +611,7 @@ class MoltenKernel:
 
         self.updating_interface = True
         self.clear_empty_spans()
+        self._render_cell_frames()
         new_selected_cell = self._get_selected_span()
 
         # Clear the cell we just left
@@ -428,7 +630,13 @@ class MoltenKernel:
 
         if self.options.virt_text_output:
             for span, output in self.outputs.items():
-                output.show_virtual_output(span.end)
+                if span != self.selected_cell:
+                    output.clear_images()
+                output.show_virtual_output(
+                    span.end,
+                    span,
+                    render_images=span == self.selected_cell,
+                )
 
         self.canvas.present()
 

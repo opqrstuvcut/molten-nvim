@@ -211,6 +211,7 @@ class Molten:
 
             self.add_kernel(self.nvim.current.buffer, kernel_id, molten)
             molten._doautocmd("MoltenInitPost")
+            molten.update_interface()
             if isinstance(self.canvas, WeztermCanvas):
                 self.canvas.wezterm_split()
 

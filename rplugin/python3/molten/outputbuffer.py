@@ -127,13 +127,13 @@ class OutputBuffer:
         else:
             return f"{old}Out[{execution_count}]: {status} {time}".rstrip()
 
-    def enter(self, anchor: Position) -> bool:
+    def enter(self, anchor: Position, span: CodeCell | None = None) -> bool:
         entered = False
         if self.display_win is None:
             if self.options.enter_output_behavior == "open_then_enter":
-                self.show_floating_win(anchor)
+                self.show_floating_win(anchor, span)
             elif self.options.enter_output_behavior == "open_and_enter":
-                self.show_floating_win(anchor)
+                self.show_floating_win(anchor, span)
                 entered = True
                 self.nvim.funcs.nvim_set_current_win(self.display_win)
         elif self.options.enter_output_behavior != "no_open":
@@ -151,16 +151,20 @@ class OutputBuffer:
             if self.display_win.valid:
                 self.nvim.funcs.nvim_win_close(self.display_win, True)
             self.display_win = None
-            redraw = False
-            for chunk in self.output.chunks:
-                if isinstance(chunk, ImageOutputChunk) and chunk.img_identifier is not None:
-                    self.canvas.remove_image(chunk.img_identifier)
-                    redraw = True
-            if redraw:
-                self.canvas.present()
+        self.clear_images()
         if self.display_virt_lines is not None:
             del self.display_virt_lines
             self.display_virt_lines = None
+
+    def clear_images(self) -> None:
+        redraw = False
+        for chunk in self.output.chunks:
+            if isinstance(chunk, ImageOutputChunk) and chunk.img_identifier is not None:
+                self.canvas.remove_image(chunk.img_identifier)
+                chunk.img_identifier = None
+                redraw = True
+        if redraw:
+            self.canvas.present()
 
     def clear_virt_output(self, bufnr: int) -> None:
         if self.virt_text_id is not None:
@@ -173,13 +177,7 @@ class OutputBuffer:
             self.virt_hidden = True
 
         # clear any inline images, etc.
-        redraw = False
-        for chunk in self.output.chunks:
-            if isinstance(chunk, ImageOutputChunk) and chunk.img_identifier is not None:
-                self.canvas.remove_image(chunk.img_identifier)
-                redraw = True
-        if redraw:
-            self.canvas.present()
+        self.clear_images()
 
     def toggle_virtual_output(self, anchor: Position) -> None:
         if self.virt_hidden:
@@ -199,7 +197,13 @@ class OutputBuffer:
                 {"scope": "local", "win": self.display_win.handle},
             )
 
-    def build_output_text(self, shape, buf: int, virtual: bool) -> Tuple[List[str], int]:
+    def build_output_text(
+        self,
+        shape,
+        buf: int,
+        virtual: bool,
+        render_images: bool = True,
+    ) -> Tuple[List[str], int]:
         lineno = 1  # we add a status line at the top in the end
         lines_str = ""
         # images are rendered with virtual lines by image.nvim
@@ -207,6 +211,8 @@ class OutputBuffer:
         if len(self.output.chunks) > 0:
             x = 0
             for chunk in self.output.chunks:
+                if isinstance(chunk, ImageOutputChunk) and not render_images:
+                    continue
                 y = lineno
                 if virtual:
                     y = shape[1]
@@ -242,10 +248,35 @@ class OutputBuffer:
         lines.insert(0, self._get_header_text(self.output))
         return lines, len(lines) - 1 + virtual_lines
 
-    def show_virtual_output(self, anchor: Position) -> None:
+    def _cell_bottom_border(self, span: CodeCell | None) -> str | None:
+        if span is None:
+            return None
+
+        win_width = self.nvim.current.window.width
+        standard_frame_width = max(40, min(int(win_width * 0.8), 120))
+        lines = self.nvim.funcs.nvim_buf_get_lines(
+            span.bufno,
+            span.begin.lineno,
+            span.end.lineno + 1,
+            False,
+        )
+        max_line_width = max((self.nvim.funcs.strdisplaywidth(line) for line in lines), default=0)
+        frame_width = max(standard_frame_width, max_line_width + 3)
+        return "╰" + ("─" * (frame_width - 2)) + "╯"
+
+    def show_virtual_output(
+        self,
+        anchor: Position,
+        span: CodeCell | None = None,
+        render_images: bool = True,
+    ) -> None:
         if self.virt_hidden:
             return
-        if self.displayed_status == OutputStatus.DONE and self.virt_text_id is not None:
+        if (
+            self.displayed_status == OutputStatus.DONE
+            and self.virt_text_id is not None
+            and not render_images
+        ):
             return
         offset = self.calculate_offset(anchor) if self.options.cover_empty_lines else 0
         self.displayed_status = self.output.status
@@ -279,17 +310,30 @@ class OutputBuffer:
             win_width,
             win_height,
         )
-        lines, _ = self.build_output_text(shape, anchor.bufno, True)
+        if render_images and self.options.image_provider == "snacks-gallery.nvim":
+            gallery_anchor_col = self._gallery_anchor_col(span, win)
+            if gallery_anchor_col is not None:
+                buf.vars["molten_gallery_anchor_col"] = gallery_anchor_col
+            gallery_anchor_row = self._gallery_anchor_row(span, win)
+            if gallery_anchor_row is not None:
+                buf.vars["molten_gallery_anchor_row"] = gallery_anchor_row
+
+        lines, _ = self.build_output_text(shape, anchor.bufno, True, render_images=render_images)
 
         if len(lines) > self.options.virt_text_max_lines:
             lines = self.truncate_lines(lines, self.options.virt_text_max_lines)
+
+        virt_lines = [[(line, self.options.hl.virtual_text)] for line in lines]
+        bottom_border = self._cell_bottom_border(span)
+        if bottom_border is not None:
+            virt_lines = [[(bottom_border, "MoltenCellBorder")]] + virt_lines
 
         self.virt_text_id = buf.api.set_extmark(
             self.extmark_namespace,
             win_row,
             0,
             {
-                "virt_lines": [[(line, self.options.hl.virtual_text)] for line in lines],
+                "virt_lines": virt_lines,
             },
         )
         self.canvas.present()
@@ -355,6 +399,14 @@ class OutputBuffer:
             return None
         return self._cell_right_screen_col(span, win)
 
+    def _gallery_anchor_row(self, span: CodeCell | None, win: Window) -> int | None:
+        if span is None:
+            return None
+
+        cell_top_win_row = self._buffer_to_window_lineno(span.begin.lineno + 1)
+        win_info = self.nvim.funcs.getwininfo(win.handle)[0]
+        return max(win_info["winrow"] + cell_top_win_row - 2, 0)
+
     def show_floating_win(self, anchor: Position, span: CodeCell | None = None) -> None:
         win = self.nvim.current.window
         win_col = 0
@@ -389,6 +441,13 @@ class OutputBuffer:
             win_width - sign_col_width,
             win_height,
         )
+        gallery_anchor_col = self._gallery_anchor_col(span, win)
+        if gallery_anchor_col is not None:
+            self.display_buf.vars["molten_gallery_anchor_col"] = gallery_anchor_col
+        gallery_anchor_row = self._gallery_anchor_row(span, win)
+        if gallery_anchor_row is not None:
+            self.display_buf.vars["molten_gallery_anchor_row"] = gallery_anchor_row
+
         lines, real_height = self.build_output_text(shape, self.display_buf.number, False)
 
         # You can't append lines normally, there will be a blank line at the top
@@ -397,9 +456,6 @@ class OutputBuffer:
         self.nvim.api.set_option_value(
             "filetype", "molten_output", {"buf": self.display_buf.handle}
         )
-        gallery_anchor_col = self._gallery_anchor_col(span, win)
-        if gallery_anchor_col is not None:
-            self.display_buf.vars["molten_gallery_anchor_col"] = gallery_anchor_col
 
         # Open output window
         # assert self.display_window is None

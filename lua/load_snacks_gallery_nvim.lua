@@ -149,7 +149,7 @@ local function layout_host(host_buf)
   local relative_mode
 
   if gallery_position == "right" then
-    current_row = math.max(host_info.winrow - 1, 0)
+    current_row = host_images[1].anchor_row or math.max(host_info.winrow - 1, 0)
     current_col = host_images[1].anchor_col and (host_images[1].anchor_col + gap) or nil
     if current_col == nil or current_col >= editor_width - 20 then
       width_limit = math.max(40, math.floor(editor_width * 0.5))
@@ -206,6 +206,7 @@ gallery_api.from_file = function(path, opts)
     img.host_buf = opts.buffer
     img.host_win = opts.window
     img.anchor_col = vim.b[opts.buffer].molten_gallery_anchor_col
+    img.anchor_row = vim.b[opts.buffer].molten_gallery_anchor_row
     return identifier
   end
   next_order = next_order + 1
@@ -215,6 +216,7 @@ gallery_api.from_file = function(path, opts)
     host_buf = opts.buffer,
     host_win = opts.window,
     anchor_col = vim.b[opts.buffer].molten_gallery_anchor_col,
+    anchor_row = vim.b[opts.buffer].molten_gallery_anchor_row,
     order = next_order,
     visible = false,
     buf = nil,

@@ -160,10 +160,20 @@ class ImageOutputChunk(OutputChunk):
         winnr: int | None = None,
     ) -> Tuple[str, int]:
         loc = options.image_location
-        if not (loc == "both" or (loc == "virt" and virtual) or (loc == "float" and not virtual)):
+        snacks_float_from_virtual = (
+            options.image_provider == "snacks-gallery.nvim"
+            and virtual
+            and loc in ("both", "float")
+        )
+        if not (
+            loc == "both"
+            or (loc == "virt" and virtual)
+            or (loc == "float" and not virtual)
+            or snacks_float_from_virtual
+        ):
             return "", 0
 
-        if options.image_provider == "snacks-gallery.nvim" and virtual:
+        if options.image_provider == "snacks-gallery.nvim" and virtual and not snacks_float_from_virtual:
             return "", 0
 
         self.img_identifier = canvas.add_image(
